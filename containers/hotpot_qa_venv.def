@@ -1,0 +1,225 @@
+Bootstrap: docker
+From: nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+%labels
+    Author HotpotQA-System
+    Version 2.0
+    Description Singularity container for HotpotQA with local conda environment support
+
+%environment
+    # Python environment - now points to mounted local virtualenv
+    export PATH=/mnt/venv/bin:/usr/bin:/bin:$PATH
+    export PYTHONPATH=/workspace:$PYTHONPATH
+    
+    # HuggingFace cache - usar el directorio actual del host
+    export HF_HOME=/mnt/gpu-fastdata/hf_cache
+    export TRANSFORMERS_CACHE=$HF_HOME/transformers
+    export HF_DATASETS_CACHE=$HF_HOME/datasets
+    
+    # CUDA
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+    
+    # Torch settings
+    export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
+    export CUDA_VISIBLE_DEVICES=0
+    
+    # Virtual environment settings for mounted environment
+    export VIRTUAL_ENV=/mnt/venv
+    export VIRTUAL_ENV_PROMPT=(hotpotqa)
+
+%post
+    # Update and install minimal system dependencies
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        curl \
+        ca-certificates \
+        sudo \
+        locales \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libgomp1 \
+        python3 \
+        python3-pip \
+        python3-dev \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Set locale
+    locale-gen en_US.UTF-8
+    export LANG=en_US.UTF-8
+    export LANGUAGE=en_US:en
+    export LC_ALL=en_US.UTF-8
+    
+    # Create mount points for local virtual environment
+    mkdir -p /mnt/venv
+    mkdir -p /workspace
+    mkdir -p /mnt/gpu-fastdata/hf_cache
+    
+    # Create a symbolic link for python if venv is not available
+    # This prevents errors when the container starts without the bind mount
+    mkdir -p /opt/fallback
+    echo '#!/bin/bash' > /opt/fallback/python
+    echo 'echo "Error: Please bind mount your virtual environment to /mnt/venv"' >> /opt/fallback/python
+    echo 'echo "Example: singularity exec --bind /path/to/your/venv:/mnt/venv ..."' >> /opt/fallback/python
+    echo 'exit 1' >> /opt/fallback/python
+    chmod +x /opt/fallback/python
+    
+    # Clean up
+    rm -rf /root/.cache/pip
+
+%runscript
+    #!/bin/bash
+    echo "HotpotQA Singularity Container (Local Virtual Environment Mode)"
+    echo "=============================================================="
+    
+    # Check if virtual environment is properly mounted
+    if [ ! -f "/mnt/venv/bin/python" ]; then
+        echo "ERROR: Virtual environment not found at /mnt/venv"
+        echo "Please bind mount your virtual environment:"
+        echo "  singularity exec --bind /path/to/your/venv:/mnt/venv ..."
+        echo ""
+        echo "To create a suitable virtual environment:"
+        echo "  python3 -m venv hotpotqa_venv"
+        echo "  source hotpotqa_venv/bin/activate"
+        echo "  # Install your dependencies..."
+        exit 1
+    fi
+    
+    echo "Using virtual environment: /mnt/venv"
+    echo "Python version:"
+    /mnt/venv/bin/python --version
+    echo ""
+    
+    # Check if key packages are available
+    if /mnt/venv/bin/python -c "import torch" 2>/dev/null; then
+        echo "PyTorch version:"
+        /mnt/venv/bin/python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+        echo "CUDA available:"
+        /mnt/venv/bin/python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+    else
+        echo "Warning: PyTorch not found in environment"
+    fi
+    
+    if /mnt/venv/bin/python -c "import transformers" 2>/dev/null; then
+        echo "Transformers version:"
+        /mnt/venv/bin/python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+    else
+        echo "Warning: Transformers not found in environment"
+    fi
+    
+    echo ""
+    echo "Container ready! Your local virtual environment is mounted and active."
+    echo ""
+    echo "Available providers:"
+    echo "  - ollama: Basic Ollama integration"
+    echo "  - ollama-openai: Ollama with OpenAI-compatible API (recommended)"
+    echo "  - huggingface: Local model execution"
+    echo "  - openai: OpenAI API"
+
+%help
+    This is a Singularity container for running HotpotQA with your LOCAL virtual environment.
+    
+    SETUP INSTRUCTIONS:
+    ===================
+    
+    1. Create a virtual environment locally with all dependencies:
+        python3 -m venv hotpotqa_venv
+        source hotpotqa_venv/bin/activate
+        
+        # Upgrade pip
+        pip install --upgrade pip
+        
+        # Install PyTorch with CUDA
+        pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+            --index-url https://download.pytorch.org/whl/cu118
+        
+        # Install core ML dependencies
+        pip install transformers==4.36.0 accelerate==0.25.0 bitsandbytes==0.41.3
+        pip install datasets evaluate safetensors tokenizers
+        
+        # Install API clients
+        pip install openai ollama httpx aiohttp
+        
+        # Install utilities
+        pip install tqdm pyyaml pandas numpy scikit-learn jsonschema pydantic
+    
+    2. Build the container:
+        sudo singularity build hotpot_qa_venv.sif hotpot_qa_venv.def
+    
+    3. Run with your local virtual environment:
+        singularity exec --nv \
+            --bind /path/to/hotpotqa_venv:/mnt/venv \
+            --bind $PWD:/workspace \
+            hotpot_qa_venv.sif \
+            python /workspace/hotpot_qa.py [options]
+    
+    ADVANTAGES:
+    ===========
+    - Use your existing local virtual environment
+    - No need to reinstall packages when adding dependencies
+    - Faster container build (no package installation)
+    - Easy to update dependencies locally
+    - Share environments between different containers
+    - Works with any Python package manager (pip, pipenv, poetry, etc.)
+    
+    BIND MOUNT EXAMPLES:
+    ===================
+    
+    # Basic usage with virtual environment
+    singularity exec --nv \
+        --bind $PWD/hotpotqa_venv:/mnt/venv \
+        --bind $PWD:/workspace \
+        hotpot_qa_venv.sif \
+        python /workspace/hotpot_qa.py --help
+    
+    # With absolute path to virtual environment
+    singularity exec --nv \
+        --bind /home/user/envs/hotpotqa:/mnt/venv \
+        --bind $PWD:/workspace \
+        hotpot_qa_venv.sif \
+        python /workspace/hotpot_qa.py \
+            --input /workspace/data.json \
+            --output /workspace/results.json \
+            --provider ollama-openai \
+            --model llama3.1:8b
+    
+    # With HuggingFace cache directory
+    singularity exec --nv \
+        --bind $PWD/hotpotqa_venv:/mnt/venv \
+        --bind $PWD:/workspace \
+        --bind $HOME/.cache/huggingface:/mnt/gpu-fastdata/hf_cache \
+        hotpot_qa_venv.sif \
+        python /workspace/hotpot_qa.py \
+            --provider huggingface \
+            --model meta-llama/Llama-3.1-8B-Instruct \
+            --load-in-4bit
+    
+    # Using with pipenv (if Pipfile is in current directory)
+    pipenv --venv  # to get the path
+    singularity exec --nv \
+        --bind $(pipenv --venv):/mnt/venv \
+        --bind $PWD:/workspace \
+        hotpot_qa_venv.sif \
+        python /workspace/hotpot_qa.py [options]
+    
+    HELPER SCRIPT:
+    ==============
+    You can create a wrapper script to simplify usage:
+    
+    #!/bin/bash
+    # save as run_hotpot.sh
+    VENV_PATH="$PWD/hotpotqa_venv"  # or your venv path
+    singularity exec --nv \
+        --bind $VENV_PATH:/mnt/venv \
+        --bind $PWD:/workspace \
+        --bind $HOME/.cache/huggingface:/mnt/gpu-fastdata/hf_cache \
+        hotpot_qa_venv.sif \
+        python /workspace/hotpot_qa.py "$@"
+    
+    Then use: ./run_hotpot.sh --provider ollama-openai --model llama3.1:8b [other options]

@@ -1,0 +1,182 @@
+Bootstrap: docker
+From: nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+%labels
+    Author HotpotQA-System
+    Version 1.0
+    Description Singularity container for HotpotQA Question Answering with Llama models
+
+%environment
+    # Python environment
+    export PATH=/opt/conda/bin:$PATH
+    export PYTHONPATH=/workspace:$PYTHONPATH
+    
+    # HuggingFace cache - usar el directorio actual del host
+    export HF_HOME=/mnt/gpu-fastdata/hf_cache
+    export TRANSFORMERS_CACHE=$HF_HOME/transformers
+    export HF_DATASETS_CACHE=$HF_HOME/datasets
+    
+    # CUDA
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+    
+    # Torch settings
+    export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
+    export CUDA_VISIBLE_DEVICES=0
+
+%post
+    # Update and install system dependencies
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        curl \
+        ca-certificates \
+        sudo \
+        locales \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Set locale
+    locale-gen en_US.UTF-8
+    export LANG=en_US.UTF-8
+    export LANGUAGE=en_US:en
+    export LC_ALL=en_US.UTF-8
+    
+    # Install Miniconda (with automatic acceptance of license)
+    wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py310_23.5.2-0-Linux-x86_64.sh -O /tmp/miniconda.sh
+    /bin/bash /tmp/miniconda.sh -b -f -p /opt/conda
+    rm /tmp/miniconda.sh
+    
+    # Initialize conda for bash
+    eval "$(/opt/conda/bin/conda shell.bash hook)"
+    
+    # Update conda (skip update to avoid issues)
+    # /opt/conda/bin/conda update -n base -c defaults conda -y
+    
+    # Update pip
+    /opt/conda/bin/python -m pip install --upgrade pip
+    
+    # Install PyTorch with CUDA support
+    /opt/conda/bin/pip install --no-cache-dir \
+        torch==2.1.0 \
+        torchvision==0.16.0 \
+        torchaudio==2.1.0 \
+        --index-url https://download.pytorch.org/whl/cu118
+    
+    # Install core dependencies
+    /opt/conda/bin/pip install --no-cache-dir \
+        transformers==4.36.0 \
+        accelerate==0.25.0 \
+        bitsandbytes==0.41.3 \
+        sentencepiece==0.1.99 \
+        protobuf==3.20.3 \
+        scipy==1.11.4
+    
+    # Install additional ML libraries
+    /opt/conda/bin/pip install --no-cache-dir \
+        datasets==2.15.0 \
+        evaluate==0.4.1 \
+        safetensors==0.4.1 \
+        tokenizers==0.15.0
+    
+    # Install utilities
+    /opt/conda/bin/pip install --no-cache-dir \
+        tqdm \
+        pyyaml \
+        pandas \
+        numpy \
+        scikit-learn
+    
+    # Install API clients for LLM providers
+    /opt/conda/bin/pip install --no-cache-dir \
+        openai==1.12.0 \
+        ollama==0.1.7 \
+        httpx==0.25.2 \
+        aiohttp==3.9.1
+    
+    # Install additional dependencies for robust JSON parsing
+    /opt/conda/bin/pip install --no-cache-dir \
+        jsonschema==4.20.0 \
+        pydantic==2.5.3
+    
+    # Create workspace directory
+    mkdir -p /workspace
+    
+    # Clean up
+    /opt/conda/bin/conda clean -afy
+    rm -rf /root/.cache/pip
+
+%runscript
+    echo "HotpotQA Singularity Container"
+    echo "==============================="
+    echo "Python version:"
+    /opt/conda/bin/python --version
+    echo ""
+    echo "PyTorch version:"
+    /opt/conda/bin/python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+    echo ""
+    echo "CUDA available:"
+    /opt/conda/bin/python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+    echo ""
+    echo "Transformers version:"
+    /opt/conda/bin/python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+    echo ""
+    echo "OpenAI client version:"
+    /opt/conda/bin/python -c "import openai; print(f'OpenAI: {openai.__version__}')"
+    echo ""
+    echo "Container ready! Use 'singularity exec' to run your scripts."
+    echo ""
+    echo "Available providers:"
+    echo "  - ollama: Basic Ollama integration"
+    echo "  - ollama-openai: Ollama with OpenAI-compatible API (recommended)"
+    echo "  - huggingface: Local model execution"
+    echo "  - openai: OpenAI API"
+    echo ""
+    echo "Example:"
+    echo "singularity exec --nv --bind \$PWD:/workspace hotpot_qa.sif python /workspace/hotpot_qa.py --help"
+
+%help
+    This is a Singularity container for running HotpotQA Question Answering with multiple LLM providers.
+    
+    To build this container:
+        sudo singularity build hotpot_qa.sif hotpot_qa.def
+    
+    To run with GPU support:
+        singularity exec --nv --bind $PWD:/workspace hotpot_qa.sif python /workspace/hotpot_qa.py [options]
+    
+    The container includes:
+        - Python 3.10
+        - PyTorch 2.1.0 with CUDA 11.8
+        - Transformers 4.36.0
+        - Accelerate for multi-GPU support
+        - Bitsandbytes for quantization
+        - OpenAI client for Ollama-OpenAI and OpenAI providers
+        - Ollama client for basic Ollama integration
+        - All necessary dependencies for running various LLM models
+    
+    Supported providers:
+        1. ollama: Basic Ollama integration
+        2. ollama-openai: Ollama with OpenAI-compatible API (best for structured outputs)
+        3. huggingface: Local model execution with GPU
+        4. openai: OpenAI API (requires API key)
+    
+    Important: Models will be downloaded to your current directory (mounted as /workspace)
+    through the --bind flag. The HF_HOME is set to $HF_HOME.
+    
+    Example commands:
+        # Using Ollama with OpenAI-compatible API (recommended)
+        singularity exec --nv --bind $PWD:/workspace hotpot_qa.sif python /workspace/hotpot_qa.py \
+            --input /workspace/hotpot_dev_distractor_v1.json \
+            --output /workspace/results.json \
+            --provider ollama-openai \
+            --model llama3.1:8b \
+            --num-samples 50
+        
+        # Using HuggingFace with quantization
+        singularity exec --nv --bind $PWD:/workspace hotpot_qa.sif python /workspace/hotpot_qa.py \
+            --input /workspace/hotpot_dev_distractor_v1.json \
+            --output /workspace/results.json \
+            --provider huggingface \
+            --model meta-llama/Llama-3.1-8B-Instruct \
+            --load-in-4bit
